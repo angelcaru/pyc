@@ -1,17 +1,18 @@
 void puts(const char *msg);
 void putd(int n);
 
-void f(void) {
-    puts("f()");
-}
-
-int g(void) {
-    return 69;
-}
-
+char *msg;
+char b;
+char zero;
 int main(void) {
-    f();
-    putd(g());
-    f();
+    msg = "hello";
+    zero = 0;
+
+    while (*msg) {
+        b = *msg;
+        puts(&b);
+        msg = msg + 1;
+    }
+
     return 0;
 }

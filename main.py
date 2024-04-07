@@ -19,6 +19,19 @@ class CType(ABC):
     def size(self):
         ...
 
+    def __add__(self, other):
+        match (self, other):
+            case (BasicCType(BasicCTypeKind.INT), BasicCType(BasicCTypeKind.INT)):
+                return BasicCType(BasicCTypeKind.INT)
+            case (CPtrType(inner), BasicCType(BasicCTypeKind.INT)):
+                return CPtrType(inner)
+            case (BasicCType(BasicCTypeKind.INT), CPtrType(inner)):
+                return CPtrType(inner)
+            case (CPtrType(inner1), CPtrType(inner2)):
+                assert False, "illegal operation (TODO: properly report errors)"
+            case _:
+                assert False
+
 class BasicCTypeKind(StrEnum):
     VOID = auto()
     INT = auto()
@@ -113,8 +126,10 @@ class BytecodeGenerator(NodeVisitor):
                 self.init_mem.extend(actual_buf)
                 self.init_mem.append(0)
                 self.ops.append(Op(OpType.PUSH, ptr))
+                return CPtrType(BasicCType(BasicCTypeKind.CHAR))
             case "int":
                 self.ops.append(Op(OpType.PUSH, int(node.value)))
+                return BasicCType(BasicCTypeKind.INT)
             case t:
                 assert False, f"Unsupported constant type {t!r}"
 
@@ -130,6 +145,8 @@ class BytecodeGenerator(NodeVisitor):
         else:
             self.ops.append(Op(OpType.PUSH, func.body))
         self.ops.append(Op(OpType.CALL, len(exprs)))
+        # TODO: handle return type
+        return BasicCType(BasicCTypeKind.VOID)
 
     def visit_Return(self, node):
         if node.expr is not None:
@@ -142,35 +159,72 @@ class BytecodeGenerator(NodeVisitor):
                 match node.lvalue:
                     case ID(name=name):
                         var = self.globals[name]
-                        size = var.type.size
+                        typ = var.type
                         self.ops.append(Op(OpType.PUSH, var.addr))
                     case _:
                         assert False, f"Unsupported lvalue {node.lvalue!r}"
                 self.visit(node.rvalue)
-                self.ops.append(Op(OpType.STORE, size))
+                self.ops.append(Op(OpType.STORE, typ.size))
+                return typ
             case t:
                 assert False, f"Unsupported assignment op {t!r}"
 
     def visit_ID(self, node):
         name = node.name
         var = self.globals[name]
-        size = var.type.size
+        typ = var.type
         self.ops.append(Op(OpType.PUSH, var.addr))
-        self.ops.append(Op(OpType.LOAD, size))
+        self.ops.append(Op(OpType.LOAD, typ.size))
+        return typ
+
+    def visit_UnaryOp(self, node):
+        match node.op:
+            case "*":
+                typ = self.visit(node.expr)
+                if not isinstance(typ, CPtrType):
+                    assert False, f"dereference of non-pointer (TODO: properly report errors)"
+                self.ops.append(Op(OpType.LOAD, typ.inner.size))
+                return typ.inner
+            case "&":
+                if not isinstance(node.expr, ID):
+                    assert False, f"address of non-variable (TODO: properly report errors)"
+                var = self.globals[node.expr.name]
+                self.ops.append(Op(OpType.PUSH, var.addr))
+                return CPtrType(var.type)
+            case t:
+                assert False, f"Unsupported unary op {t!r}"
 
     def visit_BinaryOp(self, node):
-        self.visit(node.left)
-        self.visit(node.right)
+        typ1 = self.visit(node.left)
+        typ2 = self.visit(node.right)
         match node.op:
             case "+":
                 self.ops.append(Op(OpType.ADD))
+                return typ1 + typ2
             case t:
                 assert False, f"Unsupported binary op {t!r}"
+
+    def visit_While(self, node):
+        cond_ip = len(self.ops)
+        self.visit(node.cond)
+        jmp_op = Op(OpType.JMP_IF_ZERO, 0)
+        self.ops.append(jmp_op)
+
+        stmt_ip = len(self.ops)
+        self.visit(node.stmt)
+        self.ops.append(Op(OpType.JMP, cond_ip))
+
+        jmp_op.operand = len(self.ops)
 
     def visit_TypeDecl(self, node):
         type_ = type_from_ast(node.type)
         # TODO: handle `const`
         self.globals[node.declname] = CGlobal(type_, len(self.init_mem))
+        self.init_mem.extend([0] * type_.size)
+
+    def visit_PtrDecl(self, node):
+        type_ = type_from_ast(node)
+        self.globals[node.type.declname] = CGlobal(type_, len(self.init_mem))
         self.init_mem.extend([0] * type_.size)
 
     def visit_Compound(self, node):
@@ -239,12 +293,18 @@ def run_bc(generator):
                 right = stack.pop()
                 left = stack.pop()
                 stack.append(left + right)
+            case OpType.JMP_IF_ZERO:
+                if stack.pop() == 0:
+                    ip = op.operand
+            case OpType.JMP:
+                ip = op.operand
             case t:
                 assert False, f"Unimplemented op type {t!r}"
 
 def run(command):
     subprocess.run(command)
 
+DEBUG = False
 def main(argv):
     program_name = argv.pop(0)
     if not argv:
@@ -263,6 +323,11 @@ def main(argv):
 
     generator = BytecodeGenerator()
     generator.visit(ast)
+    if DEBUG:
+        print(generator.init_mem)
+        for op in generator.ops:
+            typ = op.type
+            print(typ.name, op.operand, f"({generator.init_mem[op.operand:]})" if typ == OpType.PUSH else "", sep="\t")
     run_bc(generator)
 
 if __name__ == "__main__":

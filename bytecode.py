@@ -10,6 +10,8 @@ class OpType(IntEnum):
     LOAD = auto() # Operand: int (size)
     STORE = auto() # Operand: int (size)
     ADD = auto() # Operand: None
+    JMP_IF_ZERO = auto() # Operand: int
+    JMP = auto() # Operand: int
 
 OpOperand = Optional[int | str | bool]
 
