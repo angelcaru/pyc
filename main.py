@@ -103,6 +103,7 @@ class BytecodeGenerator(NodeVisitor):
         ip = len(self.ops)
         func.body = ip
         self.visit(node.body)
+        self.ops.append(Op(OpType.RET, False))
 
     def visit_Constant(self, node):
         match node.type:
@@ -118,7 +119,9 @@ class BytecodeGenerator(NodeVisitor):
                 assert False, f"Unsupported constant type {t!r}"
 
     def visit_FuncCall(self, node):
-        for expr in reversed(node.args.exprs):
+        args = node.args
+        exprs = args.exprs if args is not None else []
+        for expr in reversed(exprs):
             self.visit(expr)
         name = node.name.name
         func = self.funcs[name]
@@ -126,7 +129,7 @@ class BytecodeGenerator(NodeVisitor):
             self.ops.append(Op(OpType.PUSH_EXTERN, name))
         else:
             self.ops.append(Op(OpType.PUSH, func.body))
-        self.ops.append(Op(OpType.CALL, len(node.args.exprs)))
+        self.ops.append(Op(OpType.CALL, len(exprs)))
 
     def visit_Return(self, node):
         if node.expr is not None:
@@ -199,6 +202,7 @@ BUILTINS = {"puts": builtin_puts, "putd": builtin_putd}
 def run_bc(generator):
     ip = generator.funcs["main"].body
     stack = []
+    ret_stack = []
     memory = generator.init_mem
     ops = generator.ops
     while ip < len(ops):
@@ -211,12 +215,16 @@ def run_bc(generator):
                 stack.append(BUILTINS[op.operand])
             case OpType.CALL:
                 func = stack.pop()
-                if isinstance(func, CFunc):
-                    assert False, "Not implemented yet"
+                if isinstance(func, int):
+                    ret_stack.append(ip)
+                    ip = func
                 else:
                     func(stack, memory)
             case OpType.RET:
-                pass
+                if len(ret_stack) == 0:
+                    exit(stack.pop())
+                else:
+                    ip = ret_stack.pop()
             case OpType.STORE:
                 size = op.operand
                 value = stack.pop()
