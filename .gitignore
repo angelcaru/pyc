@@ -1,4 +1,5 @@
 hello
 preprocessed.c
 out.txt
+__pycache__/
 
