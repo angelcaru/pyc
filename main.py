@@ -15,7 +15,9 @@ from bytecode import Op, OpType
 
 # TODO: handle consts
 class CType(ABC):
-    ...
+    @property
+    def size(self):
+        ...
 
 class BasicCTypeKind(StrEnum):
     VOID = auto()
@@ -27,12 +29,26 @@ class BasicCTypeKind(StrEnum):
         return cls[name.upper()]
 
 @dataclass
-class BasicCType:
+class BasicCType(CType):
     kind: BasicCTypeKind
 
+    @property
+    def size(self):
+        match self.kind:
+            case BasicCTypeKind.VOID:
+                return 0
+            case BasicCTypeKind.INT:
+                return 4
+            case BasicCTypeKind.CHAR:
+                return 1
+
 @dataclass
-class CPtrType:
+class CPtrType(CType):
     inner: BasicCType
+
+    @property
+    def size(self):
+        return 8
 
 def type_from_ast(node):
     match node:
@@ -56,10 +72,16 @@ class CFunc:
     return_type: CType
     body: Optional[int] = None
 
+@dataclass
+class CGlobal:
+    type: CType
+    addr: int
+
 class BytecodeGenerator(NodeVisitor):
     def __init__(self):
         self.ops = []
         self.funcs = {}
+        self.globals = {}
         self.init_mem = bytearray()
 
     def visit_FileAST(self, node):
@@ -111,6 +133,43 @@ class BytecodeGenerator(NodeVisitor):
             self.visit(node.expr)
         self.ops.append(Op(OpType.RET, node.expr is not None))
 
+    def visit_Assignment(self, node):
+        match node.op:
+            case "=":
+                match node.lvalue:
+                    case ID(name=name):
+                        var = self.globals[name]
+                        size = var.type.size
+                        self.ops.append(Op(OpType.PUSH, var.addr))
+                    case _:
+                        assert False, f"Unsupported lvalue {node.lvalue!r}"
+                self.visit(node.rvalue)
+                self.ops.append(Op(OpType.STORE, size))
+            case t:
+                assert False, f"Unsupported assignment op {t!r}"
+
+    def visit_ID(self, node):
+        name = node.name
+        var = self.globals[name]
+        size = var.type.size
+        self.ops.append(Op(OpType.PUSH, var.addr))
+        self.ops.append(Op(OpType.LOAD, size))
+
+    def visit_BinaryOp(self, node):
+        self.visit(node.left)
+        self.visit(node.right)
+        match node.op:
+            case "+":
+                self.ops.append(Op(OpType.ADD))
+            case t:
+                assert False, f"Unsupported binary op {t!r}"
+
+    def visit_TypeDecl(self, node):
+        type_ = type_from_ast(node.type)
+        # TODO: handle `const`
+        self.globals[node.declname] = CGlobal(type_, len(self.init_mem))
+        self.init_mem.extend([0] * type_.size)
+
     def visit_Compound(self, node):
         for stmt in node.block_items:
             self.visit(stmt)
@@ -128,7 +187,14 @@ def builtin_puts(stack, memory):
         ptr += 1
     print()
 
-BUILTINS = {"puts": builtin_puts}
+def builtin_putd(stack, memory):
+    if len(stack) < 1:
+        print("Not enough arguments for putd", file=sys.stderr)
+        return
+    value = stack.pop()
+    print(value)
+
+BUILTINS = {"puts": builtin_puts, "putd": builtin_putd}
 
 def run_bc(generator):
     ip = generator.funcs["main"].body
@@ -151,6 +217,20 @@ def run_bc(generator):
                     func(stack, memory)
             case OpType.RET:
                 pass
+            case OpType.STORE:
+                size = op.operand
+                value = stack.pop()
+                ptr = stack.pop()
+                memory[ptr:ptr+size] = value.to_bytes(length=size, byteorder="little", signed=True)
+            case OpType.LOAD:
+                size = op.operand
+                ptr = stack.pop()
+                value = int.from_bytes(memory[ptr:ptr+size], byteorder="little", signed=True)
+                stack.append(value)
+            case OpType.ADD:
+                right = stack.pop()
+                left = stack.pop()
+                stack.append(left + right)
             case t:
                 assert False, f"Unimplemented op type {t!r}"
 
